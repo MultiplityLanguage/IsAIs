@@ -1,0 +1,12 @@
+:: 42
+:: 3.14
+:: "Hello, IsAIs!"
+:: true
+:: false
+:: maybe
+:: (let [x 10 y 20] (+ x y))
+:: (if true "yes" "no")
+:: (* 6 7)
+:: (/ 10 2)
+:: (- 20 5)
+quit
