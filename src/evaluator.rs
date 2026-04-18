@@ -1,500 +1,536 @@
-use crate::types::{Value, Distribution};
+use crate::types::{Distribution, Value};
 use crate::parser::ASTNode;
 use crate::Interpreter;
 use crate::Error;
 
-/// 求值 AST 节点
+/// 内置特殊形式名称
+const SPECIAL_FORM_LET: &str = "let";
+const SPECIAL_FORM_IF: &str = "if";
+const SPECIAL_FORM_DEF: &str = "def";
+
+/// 算术操作符
+const OP_ADD: &str = "+";
+const OP_SUB: &str = "-";
+const OP_MUL: &str = "*";
+const OP_DIV: &str = "/";
+
+/// 比较操作符
+const OP_GT: &str = ">";
+const OP_LT: &str = "<";
+const OP_EQ: &str = "=";
+
+/// 逻辑操作符
+const OP_AND: &str = "and";
+const OP_OR: &str = "or";
+
+/// 其他内置命令
+const CMD_CALL: &str = "call";
+const CMD_PROMPT: &str = "prompt";
+const CMD_PARTIAL: &str = "partial";
+const CMD_CONSTRAIN: &str = "constrain";
+const CMD_GENERATE: &str = "generate";
+const CMD_SET_TEMPERATURE: &str = "set-temperature";
+const CMD_REMEMBER: &str = "remember";
+const CMD_ATTENTION: &str = "attention";
+const CMD_CLASSIFY: &str = "classify";
+const CMD_PROB: &str = "prob";
+const CMD_ASSERT: &str = "assert";
+
+// -----------------------------------------------------------------------------
+// 公共求值入口
+// -----------------------------------------------------------------------------
+
+/// 求值单个 AST 节点。
 pub fn evaluate(ast: &ASTNode, interpreter: &mut Interpreter) -> Result<Value, Error> {
     match ast {
-        ASTNode::Literal(value) => {
-            // 如果是字符串，尝试从环境中查找变量
-            if let Value::String(name) = value {
-                if let Some(bound_value) = interpreter.env.get(name) {
-                    Ok(bound_value.clone())
-                } else {
-                    Ok(value.clone())
-                }
-            } else {
-                Ok(value.clone())
-            }
-        }
-        
-        ASTNode::Comment(_) => {
-            // 注释不产生值
-            Ok(Value::Maybe)
-        }
-        
-        ASTNode::Query(query) => {
-            evaluate_query(query, interpreter)
-        }
-        
-        ASTNode::Imperative(action) => {
-            evaluate_imperative(action, interpreter)
-        }
-        
-        ASTNode::List(elements) => {
-            evaluate_list(elements, interpreter)
-        }
+        ASTNode::Literal(value) => evaluate_literal(value, interpreter),
+        ASTNode::Comment(_) => Ok(Value::Maybe),
+        ASTNode::Query(query) => evaluate_query(query, interpreter),
+        ASTNode::Imperative(action) => evaluate(action, interpreter), // 命令式动作直接递归求值
+        ASTNode::List(elements) => evaluate_list(elements, interpreter),
     }
 }
 
-/// 求值列表（函数调用或特殊形式）
+/// 处理字面量：若为字符串且环境中有同名绑定则返回绑定值，否则返回字面量本身。
+fn evaluate_literal(value: &Value, interpreter: &mut Interpreter) -> Result<Value, Error> {
+    if let Value::String(name) = value {
+        if let Some(bound) = interpreter.env.get(name) {
+            return Ok(bound.clone());
+        }
+    }
+    Ok(value.clone())
+}
+
+// -----------------------------------------------------------------------------
+// 列表求值（函数调用 / 特殊形式）
+// -----------------------------------------------------------------------------
+
 fn evaluate_list(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
     if elements.is_empty() {
         return Ok(Value::Maybe);
     }
 
-    // 直接检查第一个元素，不求值
-    match &elements[0] {
-        ASTNode::Literal(Value::String(op)) => {
-            // 首先检查是否是内置操作
-            match op.as_str() {
-                "let" => evaluate_let(&elements[1..], interpreter),
-                "if" => evaluate_if(&elements[1..], interpreter),
-                "def" => evaluate_def(&elements[1..], interpreter),
-                "+" | "-" | "*" | "/" => evaluate_arithmetic(op, &elements[1..], interpreter),
-                ">" | "<" | "=" => evaluate_comparison(op, &elements[1..], interpreter),
-                "and" | "or" => evaluate_logical(op, &elements[1..], interpreter),
-                "call" => evaluate_model_call(&elements[1..], interpreter),
-                "prompt" => evaluate_prompt_creation(&elements[1..], interpreter),
-                "partial" => evaluate_partial_application(&elements[1..], interpreter),
-                "constrain" => evaluate_constraint(&elements[1..], interpreter),
-                "generate" => evaluate_generate(&elements[1..], interpreter),
-                "set-temperature" => evaluate_set_temperature(&elements[1..], interpreter),
-                "remember" => evaluate_remember(&elements[1..], interpreter),
-                "attention" => evaluate_attention(&elements[1..], interpreter),
-                "classify" => evaluate_classify(&elements[1..], interpreter),
-                "prob" => evaluate_prob(&elements[1..], interpreter),
-                "assert" => evaluate_assert(&elements[1..], interpreter),
-                _ => {
-                    // 如果不是内置操作，尝试从环境中查找变量
-                    if let Some(value) = interpreter.env.get(op) {
-                        Ok(value.clone())
-                    } else {
-                        Err(Error::RuntimeError(format!("Unknown operation or variable: {}", op)))
-                    }
-                }
-            }
-        }
+    let first = &elements[0];
+
+    // 若第一个元素是字符串，则尝试作为特殊形式或内置命令处理
+    if let ASTNode::Literal(Value::String(op)) = first {
+        return dispatch_special_form(op, &elements[1..], interpreter);
+    }
+
+    // 否则先求值第一个元素，再报错（当前实现不支持函数值调用）
+    let evaluated_op = evaluate(first, interpreter)?;
+    Err(Error::RuntimeError(format!(
+        "Cannot call value of type {:?}",
+        evaluated_op
+    )))
+}
+
+/// 根据操作符名称分派到对应的处理函数。
+fn dispatch_special_form(op: &str, args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    match op {
+        SPECIAL_FORM_LET => eval_let(args, interpreter),
+        SPECIAL_FORM_IF => eval_if(args, interpreter),
+        SPECIAL_FORM_DEF => eval_def(args, interpreter),
+
+        OP_ADD | OP_SUB | OP_MUL | OP_DIV => eval_arithmetic(op, args, interpreter),
+        OP_GT | OP_LT | OP_EQ => eval_comparison(op, args, interpreter),
+        OP_AND | OP_OR => eval_logical(op, args, interpreter),
+
+        CMD_CALL => eval_model_call(args, interpreter),
+        CMD_PROMPT => eval_prompt_creation(args, interpreter),
+        CMD_PARTIAL => eval_partial_application(args, interpreter),
+        CMD_CONSTRAIN => eval_constraint(args, interpreter),
+        CMD_GENERATE => eval_generate(args, interpreter),
+        CMD_SET_TEMPERATURE => eval_set_temperature(args, interpreter),
+        CMD_REMEMBER => eval_remember(args, interpreter),
+        CMD_ATTENTION => eval_attention(args, interpreter),
+        CMD_CLASSIFY => eval_classify(args, interpreter),
+        CMD_PROB => eval_prob(args, interpreter),
+        CMD_ASSERT => eval_assert(args, interpreter),
+
         _ => {
-            // 如果第一个元素不是字符串，求值它
-            let operator = evaluate(&elements[0], interpreter)?;
-            Err(Error::RuntimeError(format!("Cannot call {:?}", operator)))
+            // 尝试从环境查找变量
+            interpreter
+                .env
+                .get(op)
+                .cloned()
+                .ok_or_else(|| Error::RuntimeError(format!("Unknown operation or variable: {}", op)))
         }
     }
 }
 
-/// 求值 let 绑定
-fn evaluate_let(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError("let requires bindings and body".to_string()));
-    }
+// -----------------------------------------------------------------------------
+// 特殊形式实现
+// -----------------------------------------------------------------------------
 
-    // 解析绑定
-    if let ASTNode::List(bindings) = &elements[0] {
-        for binding in bindings.chunks(2) {
-            if binding.len() == 2 {
-                // 直接获取变量名字符串，不求值
-                let name = if let ASTNode::Literal(Value::String(n)) = &binding[0] {
-                    n.clone()
-                } else {
-                    return Err(Error::RuntimeError("let binding name must be a string".to_string()));
-                };
-                
-                let value = evaluate(&binding[1], interpreter)?;
+fn eval_let(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count("let", args.len(), 2)?;
+
+    let (bindings_node, body) = (&args[0], &args[1]);
+
+    // 解析绑定列表
+    if let ASTNode::List(bindings) = bindings_node {
+        for chunk in bindings.chunks(2) {
+            if chunk.len() == 2 {
+                let name = extract_string_literal(&chunk[0], "let binding name")?;
+                let value = evaluate(&chunk[1], interpreter)?;
                 interpreter.env.insert(name, value);
             }
         }
     }
 
-    // 求值主体
-    evaluate(&elements[1], interpreter)
+    evaluate(body, interpreter)
 }
 
-/// 求值条件表达式
-fn evaluate_if(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 3 {
-        return Err(Error::RuntimeError("if requires condition, then-branch, else-branch".to_string()));
-    }
+fn eval_if(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count("if", args.len(), 3)?;
 
-    let condition = evaluate(&elements[0], interpreter)?;
-    
-    let is_true = match condition {
-        Value::Bool(b) => b,
-        Value::Maybe => false,
-        Value::Dist(dist) => {
-            // 如果分布中最可能的值是 true
-            dist.most_likely().map_or(false, |v| {
-                matches!(v, Value::Bool(true))
-            })
-        }
-        _ => false,
-    };
+    let (cond, then_branch, else_branch) = (&args[0], &args[1], &args[2]);
+    let cond_value = evaluate(cond, interpreter)?;
 
-    if is_true {
-        evaluate(&elements[1], interpreter)
+    let is_truthy = is_truthy(&cond_value);
+    if is_truthy {
+        evaluate(then_branch, interpreter)
     } else {
-        evaluate(&elements[2], interpreter)
+        evaluate(else_branch, interpreter)
     }
 }
 
-/// 求值定义
-fn evaluate_def(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError("def requires name and value".to_string()));
-    }
+fn eval_def(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count("def", args.len(), 2)?;
 
-    let name = evaluate(&elements[0], interpreter)?;
-    let value = evaluate(&elements[1], interpreter)?;
+    let name = evaluate(&args[0], interpreter)?;
+    let value = evaluate(&args[1], interpreter)?;
 
-    if let Value::String(n) = name {
-        interpreter.env.insert(n, value.clone());
-        Ok(value)
-    } else {
-        Err(Error::RuntimeError("def name must be a string".to_string()))
-    }
+    let name_str = extract_string_from_value(&name, "def name")?;
+    interpreter.env.insert(name_str, value.clone());
+    Ok(value)
 }
 
-/// 求值算术运算
-fn evaluate_arithmetic(op: &str, elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError(format!("{} requires at least 2 operands", op)));
-    }
+// -----------------------------------------------------------------------------
+// 算术运算
+// -----------------------------------------------------------------------------
 
-    let mut result = evaluate(&elements[0], interpreter)?;
-    
-    for elem in &elements[1..] {
-        let operand = evaluate(elem, interpreter)?;
-        result = apply_arithmetic(op, &result, &operand)?;
-    }
+fn eval_arithmetic(op: &str, args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count(op, args.len(), 2)?;
 
-    Ok(result)
+    let mut acc = evaluate(&args[0], interpreter)?;
+    for arg in &args[1..] {
+        let next = evaluate(arg, interpreter)?;
+        acc = apply_arithmetic(op, &acc, &next)?;
+    }
+    Ok(acc)
 }
 
-fn apply_arithmetic(op: &str, a: &Value, b: &Value) -> Result<Value, Error> {
-    match (a, b) {
+fn apply_arithmetic(op: &str, left: &Value, right: &Value) -> Result<Value, Error> {
+    match (left, right) {
         (Value::Int(x), Value::Int(y)) => {
-            let result = match op {
-                "+" => x + y,
-                "-" => x - y,
-                "*" => x * y,
-                "/" => {
-                    if *y == 0 {
-                        return Err(Error::RuntimeError("Division by zero".to_string()));
-                    }
-                    x / y
-                }
-                _ => return Err(Error::RuntimeError(format!("Unknown operator: {}", op))),
-            };
+            let result = binary_int_op(op, *x, *y)?;
             Ok(Value::Int(result))
         }
         (Value::Float(x), Value::Float(y)) => {
-            let result = match op {
-                "+" => x + y,
-                "-" => x - y,
-                "*" => x * y,
-                "/" => {
-                    if *y == 0.0 {
-                        return Err(Error::RuntimeError("Division by zero".to_string()));
-                    }
-                    x / y
-                }
-                _ => return Err(Error::RuntimeError(format!("Unknown operator: {}", op))),
-            };
+            let result = binary_float_op(op, *x, *y)?;
             Ok(Value::Float(result))
         }
-        // 处理不确定性传播
-        (Value::Dist(dist_a), _) => {
-            let outcomes: Vec<(f64, Value)> = dist_a.outcomes.iter().map(|(p, v)| {
-                apply_arithmetic(op, v, b).map(|result| (*p, result)).unwrap_or((*p, v.clone()))
-            }).collect();
-            Ok(Value::Dist(Distribution::new(outcomes)))
+        (Value::Dist(dist), other) | (other, Value::Dist(dist)) => {
+            propagate_dist_arithmetic(op, dist, other)
         }
-        (_, Value::Dist(dist_b)) => {
-            let outcomes: Vec<(f64, Value)> = dist_b.outcomes.iter().map(|(p, v)| {
-                apply_arithmetic(op, a, v).map(|result| (*p, result)).unwrap_or((*p, v.clone()))
-            }).collect();
-            Ok(Value::Dist(Distribution::new(outcomes)))
-        }
-        _ => Err(Error::TypeError(format!("Cannot apply {} to {:?} and {:?}", op, a, b))),
+        _ => Err(Error::TypeError(format!(
+            "Cannot apply {} to {:?} and {:?}",
+            op, left, right
+        ))),
     }
 }
 
-/// 求值比较运算
-fn evaluate_comparison(op: &str, elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError(format!("{} requires 2 operands", op)));
+fn binary_int_op(op: &str, x: i64, y: i64) -> Result<i64, Error> {
+    match op {
+        OP_ADD => Ok(x + y),
+        OP_SUB => Ok(x - y),
+        OP_MUL => Ok(x * y),
+        OP_DIV => {
+            if y == 0 {
+                Err(Error::RuntimeError("Division by zero".into()))
+            } else {
+                Ok(x / y)
+            }
+        }
+        _ => Err(Error::RuntimeError(format!("Unknown operator: {}", op))),
     }
+}
 
-    let a = evaluate(&elements[0], interpreter)?;
-    let b = evaluate(&elements[1], interpreter)?;
+fn binary_float_op(op: &str, x: f64, y: f64) -> Result<f64, Error> {
+    match op {
+        OP_ADD => Ok(x + y),
+        OP_SUB => Ok(x - y),
+        OP_MUL => Ok(x * y),
+        OP_DIV => {
+            if y == 0.0 {
+                Err(Error::RuntimeError("Division by zero".into()))
+            } else {
+                Ok(x / y)
+            }
+        }
+        _ => Err(Error::RuntimeError(format!("Unknown operator: {}", op))),
+    }
+}
+
+fn propagate_dist_arithmetic(op: &str, dist: &Distribution, other: &Value) -> Result<Value, Error> {
+    let outcomes = dist
+        .outcomes
+        .iter()
+        .filter_map(|(prob, val)| {
+            apply_arithmetic(op, val, other)
+                .ok()
+                .map(|result| (*prob, result))
+        })
+        .collect();
+    Ok(Value::Dist(Distribution::new(outcomes)))
+}
+
+// -----------------------------------------------------------------------------
+// 比较运算
+// -----------------------------------------------------------------------------
+
+fn eval_comparison(op: &str, args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count(op, args.len(), 2)?;
+
+    let left = evaluate(&args[0], interpreter)?;
+    let right = evaluate(&args[1], interpreter)?;
 
     let result = match op {
-        ">" => compare_values(&a, &b) > 0,
-        "<" => compare_values(&a, &b) < 0,
-        "=" => crate::types::values_equal(&a, &b),
+        OP_GT => compare_values(&left, &right) == std::cmp::Ordering::Greater,
+        OP_LT => compare_values(&left, &right) == std::cmp::Ordering::Less,
+        OP_EQ => crate::types::values_equal(&left, &right),
         _ => return Err(Error::RuntimeError(format!("Unknown comparison: {}", op))),
     };
 
     Ok(Value::Bool(result))
 }
 
-fn compare_values(a: &Value, b: &Value) -> i32 {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.cmp(y) as i32,
+fn compare_values(left: &Value, right: &Value) -> std::cmp::Ordering {
+    match (left, right) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
         (Value::Float(x), Value::Float(y)) => {
-            if x < y { -1 } else if x > y { 1 } else { 0 }
+            if x < y {
+                std::cmp::Ordering::Less
+            } else if x > y {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
         }
-        _ => 0,
+        _ => std::cmp::Ordering::Equal, // 默认相等，保守处理
     }
 }
 
-/// 求值逻辑运算
-fn evaluate_logical(op: &str, elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError(format!("{} requires 2 operands", op)));
-    }
+// -----------------------------------------------------------------------------
+// 逻辑运算
+// -----------------------------------------------------------------------------
 
-    let a = evaluate(&elements[0], interpreter)?;
-    let b = evaluate(&elements[1], interpreter)?;
+fn eval_logical(op: &str, args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count(op, args.len(), 2)?;
+
+    let left = evaluate(&args[0], interpreter)?;
+    let right = evaluate(&args[1], interpreter)?;
 
     let result = match op {
-        "and" => {
-            matches!(a, Value::Bool(true) | Value::Maybe) && matches!(b, Value::Bool(true) | Value::Maybe)
-        }
-        "or" => {
-            matches!(a, Value::Bool(true)) || matches!(b, Value::Bool(true))
-        }
+        OP_AND => is_truthy(&left) && is_truthy(&right),
+        OP_OR => is_truthy(&left) || is_truthy(&right),
         _ => return Err(Error::RuntimeError(format!("Unknown logical operator: {}", op))),
     };
 
     Ok(Value::Bool(result))
 }
 
-/// 求值查询
-fn evaluate_query(query: &ASTNode, interpreter: &mut Interpreter) -> Result<Value, Error> {
-    // 构造查询 prompt
-    let query_text = format!("{:?}", query);
-    
-    // 调用模型获取答案
-    let response = interpreter.model.query(&query_text, interpreter.temperature)?;
-    
-    // 将响应转换为分布
-    Ok(parse_model_response(&response))
-}
-
-/// 求值命令式动作
-fn evaluate_imperative(action: &ASTNode, interpreter: &mut Interpreter) -> Result<Value, Error> {
-    evaluate(action, interpreter)
-}
-
-/// 求值模型调用
-fn evaluate_model_call(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("call requires a model".to_string()));
+/// 判断值是否为“真”（用于条件分支）。
+fn is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Maybe => false,
+        Value::Dist(dist) => dist
+            .most_likely()
+            .map(|v| matches!(v, Value::Bool(true)))
+            .unwrap_or(false),
+        _ => false,
     }
+}
 
-    let _model_name = evaluate(&elements[0], interpreter)?;
-    
-    // 这里简化处理，实际应该从环境中查找模型
-    let prompt_text = if elements.len() > 1 {
-        format!("{:?}", &elements[1])
-    } else {
-        String::new()
-    };
-    
+// -----------------------------------------------------------------------------
+// 模型调用相关命令
+// -----------------------------------------------------------------------------
+
+fn eval_model_call(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("call", args.len(), 1)?;
+
+    let _model_name = evaluate(&args[0], interpreter)?; // 保留但未使用，按原逻辑
+    let prompt_text = args
+        .get(1)
+        .map(|node| format!("{:?}", node))
+        .unwrap_or_default();
+
     let response = interpreter.model.query(&prompt_text, interpreter.temperature)?;
-    Ok(parse_model_response(&response))
+    Ok(wrap_response_as_distribution(&response))
 }
 
-/// 求值 Prompt 创建
-fn evaluate_prompt_creation(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("prompt requires a template".to_string()));
-    }
+fn eval_prompt_creation(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("prompt", args.len(), 1)?;
 
-    let template = evaluate(&elements[0], interpreter)?;
-    
-    if let Value::String(tmpl) = template {
-        // 提取 holes ({{...}})
-        let holes = extract_holes(&tmpl);
-        
-        Ok(Value::Prompt(crate::types::Prompt {
-            template: tmpl,
-            holes,
-            bindings: std::collections::HashMap::new(),
-        }))
-    } else {
-        Err(Error::RuntimeError("Prompt template must be a string".to_string()))
-    }
+    let template_val = evaluate(&args[0], interpreter)?;
+    let template_str = extract_string_from_value(&template_val, "prompt template")?;
+
+    let holes = extract_holes(&template_str);
+    Ok(Value::Prompt(crate::types::Prompt {
+        template: template_str,
+        holes,
+        bindings: std::collections::HashMap::new(),
+    }))
 }
 
-fn extract_holes(template: &str) -> Vec<String> {
-    let mut holes = Vec::new();
-    let mut chars = template.chars().peekable();
-    
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            if let Some('{') = chars.peek() {
-                chars.next();
-                let mut hole = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c == '}' {
-                        chars.next();
-                        if let Some('}') = chars.peek() {
-                            chars.next();
-                            break;
-                        }
-                    }
-                    hole.push(c);
-                    chars.next();
-                }
-                holes.push(hole);
-            }
-        }
-    }
-    
-    holes
+fn eval_partial_application(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count("partial", args.len(), 3)?;
+
+    let prompt_val = evaluate(&args[0], interpreter)?;
+    let key_val = evaluate(&args[1], interpreter)?;
+    let value = evaluate(&args[2], interpreter)?;
+
+    let prompt = extract_prompt_from_value(&prompt_val, "partial first argument")?;
+    let key = extract_string_from_value(&key_val, "partial key")?;
+
+    Ok(Value::Prompt(prompt.partial_apply(&key, value)))
 }
 
-/// 求值部分应用
-fn evaluate_partial_application(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 3 {
-        return Err(Error::RuntimeError("partial requires prompt, key, and value".to_string()));
-    }
-
-    let prompt_val = evaluate(&elements[0], interpreter)?;
-    
-    if let Value::Prompt(prompt) = prompt_val {
-        let key = evaluate(&elements[1], interpreter)?;
-        let value = evaluate(&elements[2], interpreter)?;
-        
-        if let Value::String(k) = key {
-            Ok(Value::Prompt(prompt.partial_apply(&k, value)))
-        } else {
-            Err(Error::RuntimeError("Key must be a string".to_string()))
-        }
-    } else {
-        Err(Error::RuntimeError("First argument must be a prompt".to_string()))
-    }
-}
-
-/// 求值约束
-fn evaluate_constraint(_elements: &[ASTNode], _interpreter: &mut Interpreter) -> Result<Value, Error> {
-    // 简化实现：返回约束对象
+fn eval_constraint(_args: &[ASTNode], _interpreter: &mut Interpreter) -> Result<Value, Error> {
     Ok(Value::Constraint(crate::types::Constraint {
         conditions: vec![],
     }))
 }
 
-/// 求值生成
-fn evaluate_generate(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    let topic = if !elements.is_empty() {
-        evaluate(&elements[0], interpreter)?
+fn eval_generate(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    let topic = if let Some(node) = args.first() {
+        evaluate(node, interpreter)?
     } else {
-        Value::String("".to_string())
+        Value::String(String::new())
     };
 
     let prompt = format!("Generate content about: {}", topic);
     let response = interpreter.model.query(&prompt, interpreter.temperature)?;
-    
-    Ok(parse_model_response(&response))
+    Ok(wrap_response_as_distribution(&response))
 }
 
-/// 求值设置温度
-fn evaluate_set_temperature(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("set-temperature requires a value".to_string()));
+fn eval_set_temperature(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("set-temperature", args.len(), 1)?;
+
+    let temp_val = evaluate(&args[0], interpreter)?;
+    match temp_val {
+        Value::Float(t) => interpreter.temperature = t,
+        Value::Int(t) => interpreter.temperature = t as f64,
+        _ => return Err(Error::RuntimeError("Temperature must be a number".into())),
     }
 
-    let temp = evaluate(&elements[0], interpreter)?;
-    
-    match temp {
-        Value::Float(t) => {
-            interpreter.temperature = t;
-            Ok(Value::Float(interpreter.temperature))
-        }
-        Value::Int(t) => {
-            interpreter.temperature = t as f64;
-            Ok(Value::Float(interpreter.temperature))
-        }
-        _ => Err(Error::RuntimeError("Temperature must be a number".to_string())),
-    }
+    Ok(Value::Float(interpreter.temperature))
 }
 
-/// 求值记忆
-fn evaluate_remember(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("remember requires content".to_string()));
-    }
+fn eval_remember(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("remember", args.len(), 1)?;
 
-    let content = evaluate(&elements[0], interpreter)?;
-    
-    if let Value::String(text) = content {
-        interpreter.memory.store_fact(&text);
-        Ok(Value::Bool(true))
-    } else {
-        Err(Error::RuntimeError("Remembered content must be a string".to_string()))
-    }
+    let content_val = evaluate(&args[0], interpreter)?;
+    let content_str = extract_string_from_value(&content_val, "remembered content")?;
+
+    interpreter.memory.store_fact(&content_str);
+    Ok(Value::Bool(true))
 }
 
-/// 求值注意力（简化版）
-fn evaluate_attention(_elements: &[ASTNode], _interpreter: &mut Interpreter) -> Result<Value, Error> {
-    // 简化实现：返回一个模拟的注意力权重分布
+fn eval_attention(_args: &[ASTNode], _interpreter: &mut Interpreter) -> Result<Value, Error> {
     Ok(Value::Dist(Distribution::new(vec![
         (0.8, Value::Float(0.9)),
         (0.2, Value::Float(0.1)),
     ])))
 }
 
-/// 求值分类
-fn evaluate_classify(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.len() < 2 {
-        return Err(Error::RuntimeError("classify requires text and labels".to_string()));
-    }
+fn eval_classify(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_arg_count("classify", args.len(), 2)?;
 
-    let text = evaluate(&elements[0], interpreter)?;
-    let labels = evaluate(&elements[1], interpreter)?;
-    
-    // 简化实现：调用模型进行分类
+    let text = evaluate(&args[0], interpreter)?;
+    let labels = evaluate(&args[1], interpreter)?;
+
     let prompt = format!("Classify: {:?} into labels: {:?}", text, labels);
     let response = interpreter.model.query(&prompt, interpreter.temperature)?;
-    
-    Ok(parse_model_response(&response))
+    Ok(wrap_response_as_distribution(&response))
 }
 
-/// 求值概率查询
-fn evaluate_prob(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("prob requires a value".to_string()));
-    }
+fn eval_prob(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("prob", args.len(), 1)?;
 
-    let _value = evaluate(&elements[0], interpreter)?;
-    
-    // 如果当前上下文中有分布，返回该值的概率
-    // 这里简化实现
+    let _value = evaluate(&args[0], interpreter)?;
+    // 简化实现：返回固定概率值
     Ok(Value::Float(0.5))
 }
 
-/// 求值断言
-fn evaluate_assert(elements: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
-    if elements.is_empty() {
-        return Err(Error::RuntimeError("assert requires a condition".to_string()));
-    }
+fn eval_assert(args: &[ASTNode], interpreter: &mut Interpreter) -> Result<Value, Error> {
+    ensure_min_arg_count("assert", args.len(), 1)?;
 
-    let condition = evaluate(&elements[0], interpreter)?;
-    
-    match condition {
+    let cond = evaluate(&args[0], interpreter)?;
+    match cond {
         Value::Bool(true) => Ok(Value::Bool(true)),
-        Value::Bool(false) => Err(Error::RuntimeError("Assertion failed".to_string())),
-        _ => Ok(Value::Bool(true)), // 对于不确定值，假定通过
+        Value::Bool(false) => Err(Error::RuntimeError("Assertion failed".into())),
+        _ => Ok(Value::Bool(true)), // 对不确定值宽松通过
     }
 }
 
-/// 解析模型响应为分布
-fn parse_model_response(response: &str) -> Value {
-    // 简化实现：将响应包装为确定性分布
-    Value::Dist(Distribution::new(vec![
-        (1.0, Value::String(response.to_string())),
-    ]))
+// -----------------------------------------------------------------------------
+// 查询与命令式动作（直接求值）
+// -----------------------------------------------------------------------------
+
+fn evaluate_query(query: &ASTNode, interpreter: &mut Interpreter) -> Result<Value, Error> {
+    let query_text = format!("{:?}", query);
+    let response = interpreter.model.query(&query_text, interpreter.temperature)?;
+    Ok(wrap_response_as_distribution(&response))
+}
+
+// -----------------------------------------------------------------------------
+// 辅助函数
+// -----------------------------------------------------------------------------
+
+/// 确保参数个数正好为 expected。
+fn ensure_arg_count(op: &str, actual: usize, expected: usize) -> Result<(), Error> {
+    if actual < expected {
+        Err(Error::RuntimeError(format!(
+            "{} requires {} arguments, got {}",
+            op, expected, actual
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// 确保参数个数至少为 min。
+fn ensure_min_arg_count(op: &str, actual: usize, min: usize) -> Result<(), Error> {
+    if actual < min {
+        Err(Error::RuntimeError(format!(
+            "{} requires at least {} arguments, got {}",
+            op, min, actual
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// 从 AST 节点中提取字符串字面量。
+fn extract_string_literal(node: &ASTNode, context: &str) -> Result<String, Error> {
+    if let ASTNode::Literal(Value::String(s)) = node {
+        Ok(s.clone())
+    } else {
+        Err(Error::RuntimeError(format!("{} must be a string", context)))
+    }
+}
+
+/// 从 Value 中提取字符串。
+fn extract_string_from_value(value: &Value, context: &str) -> Result<String, Error> {
+    if let Value::String(s) = value {
+        Ok(s.clone())
+    } else {
+        Err(Error::RuntimeError(format!("{} must be a string", context)))
+    }
+}
+
+/// 从 Value 中提取 Prompt。
+fn extract_prompt_from_value(value: &Value, context: &str) -> Result<crate::types::Prompt, Error> {
+    if let Value::Prompt(p) = value {
+        Ok(p.clone())
+    } else {
+        Err(Error::RuntimeError(format!("{} must be a prompt", context)))
+    }
+}
+
+/// 将模型响应字符串包装为确定性分布。
+fn wrap_response_as_distribution(response: &str) -> Value {
+    Value::Dist(Distribution::new(vec![(
+        1.0,
+        Value::String(response.to_string()),
+    )]))
+}
+
+/// 从模板字符串中提取所有 `{{...}}` 内的洞名。
+fn extract_holes(template: &str) -> Vec<String> {
+    let mut holes = Vec::new();
+    let mut chars = template.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' && chars.peek() == Some(&'{') {
+            chars.next(); // 跳过第二个 '{'
+            let mut hole = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == '}' && chars.clone().nth(1) == Some('}') {
+                    chars.next();
+                    chars.next();
+                    break;
+                }
+                hole.push(c);
+                chars.next();
+            }
+            holes.push(hole);
+        }
+    }
+
+    holes
 }
