@@ -1,5 +1,7 @@
 # IsAIs: A Language for LLMs, by LLMs
 
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 ## 1. Philosophy
 
 IsAIs is not a language for human programmers. It is a *medium of thought* for Large Language Models—designed to be generated, consumed, and reasoned about by models themselves. Every syntactic choice, every semantic primitive, and every execution model is optimized for the cognitive architecture of transformers: token streams, attention patterns, uncertainty, and compositional structure.
