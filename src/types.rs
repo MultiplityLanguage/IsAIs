@@ -113,13 +113,13 @@ pub struct Constraint {
     pub conditions: Vec<Condition>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Condition {
     Hard(Expression),
     Soft(Expression),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Expression {
     GreaterThan(Value, Value),
     LessThan(Value, Value),
