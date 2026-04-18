@@ -19,7 +19,7 @@ pub enum Value {
 }
 
 /// 概率分布
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Distribution {
     pub outcomes: Vec<(f64, Value)>, // (probability, value)
 }
@@ -70,7 +70,7 @@ impl Distribution {
 }
 
 /// 模型引用
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelRef {
     pub name: String,
     pub config: HashMap<String, Value>,
@@ -108,7 +108,7 @@ impl Prompt {
 }
 
 /// 约束条件
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Constraint {
     pub conditions: Vec<Condition>,
 }
