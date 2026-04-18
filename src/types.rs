@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 /// IsAIs 中的值类型
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {
     Int(i64),
     Float(f64),
