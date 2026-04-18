@@ -77,7 +77,7 @@ pub struct ModelRef {
 }
 
 /// Prompt 模板
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Prompt {
     pub template: String,
     pub holes: Vec<String>, // {{hole}} 名称
